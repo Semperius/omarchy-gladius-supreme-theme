@@ -1,0 +1,108 @@
+#!/bin/bash
+# Warhammer 40,000 Gladius Prime Screensaver Runner with 24h Rotation and Lock
+
+screensaver_in_focus() {
+  hyprctl activewindow -j | jq -e '.class == "org.omarchy.screensaver"' >/dev/null 2>&1
+}
+
+cleanup_and_exit() {
+  pkill -f 'mpv.*Gladius.*Soundtrack' 2>/dev/null || true
+  printf '\e[?1000l'
+  hyprctl eval 'hl.config({ cursor = { invisible = false } })' &>/dev/null || hyprctl keyword cursor:invisible false &>/dev/null || true
+  pkill -x ttfx 2>/dev/null || true
+  exit 0
+}
+
+lock_and_exit() {
+  # Prevent reentry
+  trap '' SIGINT SIGTERM SIGHUP SIGQUIT
+  
+  # If system is not already locked, lock it
+  if [[ $(omarchy-shell lock isLocked 2>/dev/null) != "true" ]]; then
+    omarchy system lock &
+    local deadline=$((SECONDS + 3))
+    while (( SECONDS < deadline )); do
+      if [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]]; then
+        break
+      fi
+      sleep 0.05
+    done
+  fi
+
+  # Stop music, restore terminal & cursor, clean up screensaver windows
+  pkill -f 'mpv.*Gladius.*Soundtrack' 2>/dev/null || true
+  printf '\e[?1000l'
+  hyprctl eval 'hl.config({ cursor = { invisible = false } })' &>/dev/null || hyprctl keyword cursor:invisible false &>/dev/null || true
+  pkill -x ttfx 2>/dev/null || true
+  pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null || true
+  exit 0
+}
+
+handle_signal() {
+  if [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]]; then
+    trap '' SIGINT SIGTERM SIGHUP SIGQUIT
+    cleanup_and_exit
+  else
+    lock_and_exit
+  fi
+}
+
+trap handle_signal SIGTERM SIGINT SIGHUP SIGQUIT
+
+# Set background to black and hide cursor
+printf '\033]11;rgb:00/00/00\007'
+hyprctl eval 'hl.config({ cursor = { invisible = true } })' &>/dev/null || hyprctl keyword cursor:invisible true &>/dev/null
+
+# Enable mouse reporting so clicks wake/lock immediately
+printf '\e[?1000h'
+
+tty=$(tty 2>/dev/null)
+
+wait_for_terminal_resize() {
+  local deadline=$((SECONDS + 2))
+  while ((SECONDS < deadline)) && [[ $(stty size 2>/dev/null) == "24 80" ]]; do
+    sleep 0.02
+  done
+}
+
+wait_for_terminal_resize
+
+# Start looping background soundtrack if not already playing
+if ! pgrep -f 'mpv.*Gladius.*Soundtrack' >/dev/null; then
+  ROTATION_MGR="$HOME/.local/bin/gladius-rotation-manager"
+  if [[ -x "$ROTATION_MGR" ]]; then
+    TRACK_PATH=$("$ROTATION_MGR" --music)
+  else
+    TRACK_PATH="$HOME/.local/share/Steam/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack/Gladius - Main Theme.mp3"
+  fi
+  if [[ -n "$TRACK_PATH" && -f "$TRACK_PATH" ]]; then
+    mpv --no-video --no-terminal --loop-file=inf --volume=100 "$TRACK_PATH" >/dev/null 2>&1 &
+  fi
+fi
+
+ROTATION_MGR="$HOME/.local/bin/gladius-rotation-manager"
+if [[ -x "$ROTATION_MGR" ]]; then
+  art_file=$("$ROTATION_MGR" --image)
+fi
+
+if [[ -z "$art_file" || ! -f "$art_file" ]]; then
+  art_file="${HOME}/.config/omarchy/branding/gladius_screensaver.txt"
+fi
+if [[ ! -f "$art_file" ]]; then
+  art_file="${HOME}/.config/omarchy/branding/screensaver.txt"
+fi
+if [[ ! -f "$art_file" ]]; then
+  art_file="${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
+fi
+
+while true; do
+  ttfx -i "$art_file" \
+    --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c \
+    --random-effect --no-eol --no-restore-cursor &
+
+  while pgrep -t "${tty#/dev/}" -x ttfx >/dev/null; do
+    if read -n1 -t 0.5 || ! screensaver_in_focus; then
+      lock_and_exit
+    fi
+  done
+done
