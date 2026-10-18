@@ -155,6 +155,15 @@ static void draw_smoke_func(GtkDrawingArea *area, cairo_t *cr, int width, int he
 
     if (count == 0 || !smoke_stamp) return;
 
+    if (ov->monitor) {
+        GdkRectangle geom;
+        gdk_monitor_get_geometry(ov->monitor, &geom);
+        ov->mon_x = geom.x;
+        ov->mon_y = geom.y;
+        ov->mon_w = geom.width;
+        ov->mon_h = geom.height;
+    }
+
     double half_stamp = STAMP_SIZE / 2.0;
 
     for (int i = 0; i < count; i++) {
@@ -371,17 +380,23 @@ static void *poll_thread_func(void *arg) {
     return NULL;
 }
 
-static void activate(GtkApplication *app, gpointer user_data) {
-    (void)user_data;
-    global_app = app;
-    init_smoke_stamp();
+static void rebuild_overlays(GtkApplication *app) {
+    if (!app) return;
+
+    while (overlay_list != NULL) {
+        MonitorOverlay *ov = (MonitorOverlay*)overlay_list->data;
+        if (ov->window) {
+            gtk_window_destroy(GTK_WINDOW(ov->window));
+        }
+        if (ov->monitor) {
+            g_object_unref(ov->monitor);
+        }
+        g_free(ov);
+        overlay_list = g_list_delete_link(overlay_list, overlay_list);
+    }
 
     GdkDisplay *display = gdk_display_get_default();
-
-    GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(css, "window, drawingarea { background-color: transparent; }");
-    gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    g_object_unref(css);
+    if (!display) return;
 
     GListModel *monitors = gdk_display_get_monitors(display);
     guint n = g_list_model_get_n_items(monitors);
@@ -392,7 +407,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
         gdk_monitor_get_geometry(mon, &geom);
 
         MonitorOverlay *ov = g_new0(MonitorOverlay, 1);
-        ov->monitor = mon;
+        ov->monitor = g_object_ref(mon);
         ov->mon_x = geom.x;
         ov->mon_y = geom.y;
         ov->mon_w = geom.width;
@@ -425,6 +440,32 @@ static void activate(GtkApplication *app, gpointer user_data) {
         overlay_list = g_list_append(overlay_list, ov);
         g_object_unref(mon);
     }
+}
+
+static void on_monitors_changed(GListModel *model, guint position, guint removed, guint added, gpointer user_data) {
+    (void)model;
+    (void)position;
+    (void)removed;
+    (void)added;
+    rebuild_overlays((GtkApplication*)user_data);
+}
+
+static void activate(GtkApplication *app, gpointer user_data) {
+    (void)user_data;
+    global_app = app;
+    init_smoke_stamp();
+
+    GdkDisplay *display = gdk_display_get_default();
+
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(css, "window, drawingarea { background-color: transparent; }");
+    gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css);
+
+    GListModel *monitors = gdk_display_get_monitors(display);
+    g_signal_connect(monitors, "items-changed", G_CALLBACK(on_monitors_changed), app);
+
+    rebuild_overlays(app);
 
     pthread_t tid;
     pthread_create(&tid, NULL, poll_thread_func, NULL);
