@@ -1,0 +1,6 @@
+# Compiled binaries and build artifacts
+smoke-trail/gladius-smoke-trail
+*.o
+*.bak
+*~
+.DS_Store
