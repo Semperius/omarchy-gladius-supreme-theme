@@ -17,12 +17,7 @@ import shutil
 STATE_DIR = os.path.expanduser("~/.local/state/gladius_screensaver")
 STATE_FILE = os.path.join(STATE_DIR, "rotation_state.json")
 ENV_FILE = os.path.join(STATE_DIR, "current_session.env")
-
 THEMES_DIR = os.path.expanduser("~/.config/omarchy/branding/gladius_screensavers")
-SOUNDTRACK_DIR = os.path.expanduser(
-    "~/.local/share/Steam/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack"
-)
-FALLBACK_SOUNDTRACK_DIR = "/run/media/corezon_prime/Games2/SteamLibrary/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack"
 
 ROTATION_PERIOD = 24 * 3600  # 24 hours
 COOLDOWN_PERIOD = 72 * 3600  # 72 hours cooldown after 24h appearance
@@ -30,6 +25,52 @@ COOLDOWN_PERIOD = 72 * 3600  # 72 hours cooldown after 24h appearance
 def ensure_dirs():
     os.makedirs(STATE_DIR, exist_ok=True)
     os.makedirs(THEMES_DIR, exist_ok=True)
+
+def find_soundtrack_dir():
+    # 1. Standard Steam library location
+    std_path = os.path.expanduser(
+        "~/.local/share/Steam/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack"
+    )
+    if os.path.isdir(std_path):
+        return std_path
+
+    # 2. Parse Steam libraryfolders.vdf for configured library paths
+    vdf_path = os.path.expanduser("~/.local/share/Steam/steamapps/libraryfolders.vdf")
+    if os.path.isfile(vdf_path):
+        try:
+            with open(vdf_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if '"path"' in line:
+                        parts = line.split('"')
+                        if len(parts) >= 4:
+                            lib_base = parts[3]
+                            candidate = os.path.join(
+                                lib_base,
+                                "steamapps",
+                                "common",
+                                "Warhammer 40000 Gladius - Relics of War",
+                                "Soundtrack",
+                            )
+                            if os.path.isdir(candidate):
+                                return candidate
+        except Exception:
+            pass
+
+    # 3. Dynamic search across user and mounted media locations
+    patterns = [
+        "/run/media/*/*/SteamLibrary/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack",
+        "/run/media/*/*/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack",
+        "/media/*/*/SteamLibrary/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack",
+        "/media/*/*/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack",
+        os.path.expanduser("~/Games/SteamLibrary/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack"),
+    ]
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        for match in matches:
+            if os.path.isdir(match):
+                return match
+
+    return None
 
 def get_available_images():
     files = sorted(glob.glob(os.path.join(THEMES_DIR, "theme_*.txt")))
@@ -42,10 +83,8 @@ def get_available_images():
     return files
 
 def get_available_music():
-    sdir = SOUNDTRACK_DIR
-    if not os.path.isdir(sdir):
-        sdir = FALLBACK_SOUNDTRACK_DIR
-    if not os.path.isdir(sdir):
+    sdir = find_soundtrack_dir()
+    if not sdir or not os.path.isdir(sdir):
         return []
     
     files = sorted(glob.glob(os.path.join(sdir, "*.mp3")))

@@ -11,7 +11,7 @@ An all-in-one grimdark battlefield theme for [Omarchy](https://omarchy.org/) fea
 ## Quick Install (Omarchy)
 
 ```bash
-omarchy theme install https://github.com/<your-username>/omarchy-gladius-supreme-theme
+omarchy theme install https://github.com/Semperius/omarchy-gladius-supreme-theme
 ```
 
 Or via Omarchy menu:
@@ -19,7 +19,7 @@ Or via Omarchy menu:
 
 To apply immediately:
 ```bash
-omarchy theme set "Warhammer 40,000 Gladius: Relics of War Supreme Theme"
+omarchy theme set gladius-supreme
 ```
 
 ---
@@ -28,32 +28,42 @@ omarchy theme set "Warhammer 40,000 Gladius: Relics of War Supreme Theme"
 
 1. Copy the theme directory into your Omarchy themes folder:
    ```bash
-   cp -r . ~/.config/omarchy/themes/warhammer-40,000-gladius:-relics-of-war-supreme-theme
+   cp -r . ~/.config/omarchy/themes/gladius-supreme
    ```
 
 2. Install the Gladius Ultramarine cursor theme:
    ```bash
    mkdir -p ~/.local/share/icons/gladius-ultramarine
    cp -r cursors/xcursor ~/.local/share/icons/gladius-ultramarine/cursors
-   cp -r cursors/hyprcursor ~/.local/share/icons/gladius-ultramarine/hyprcursors
+   cp -r cursors/hyprcursors ~/.local/share/icons/gladius-ultramarine/hyprcursors
    cp cursors/manifest.hl cursors/index.theme ~/.local/share/icons/gladius-ultramarine/
    ```
 
 3. Build and install the smoke trail daemon:
    ```bash
+   # Dependencies: gtk4, gtk4-layer-shell, cairo
    cd smoke-trail && make install && cd ..
    ```
 
-4. Install the screensaver scripts:
+4. Install the screensaver scripts and systemd timer:
    ```bash
    cp screensaver/gladius-screensaver-runner screensaver/gladius-screensaver-lock screensaver/gladius-rotation-manager ~/.local/bin/
    mkdir -p ~/.config/omarchy/branding/gladius_screensavers
    cp screensaver/art/* ~/.config/omarchy/branding/gladius_screensavers/
+   mkdir -p ~/.config/systemd/user
+   cp systemd/* ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now gladius-rotation.timer
    ```
 
-5. Apply the theme:
+5. Install the theme automation hook:
    ```bash
-   omarchy theme set "Warhammer 40,000 Gladius: Relics of War Supreme Theme"
+   omarchy hook install theme-set hooks/gladius-supreme.sh
+   ```
+
+6. Apply the theme:
+   ```bash
+   omarchy theme set gladius-supreme
    ```
 
 ---
@@ -64,8 +74,8 @@ omarchy theme set "Warhammer 40,000 Gladius: Relics of War Supreme Theme"
 - **JSON Entry** for `src/data/themes.json` on `omacom/omarchy-site`:
   ```json
   {
-    "repo": "https://github.com/<your-username>/omarchy-gladius-supreme-theme",
+    "repo": "https://github.com/Semperius/omarchy-gladius-supreme-theme",
     "image": "/assets/themes/gladius-supreme.webp",
-    "name": "Warhammer 40,000 Gladius: Relics of War Supreme Theme"
+    "name": "Gladius Supreme"
   }
   ```
