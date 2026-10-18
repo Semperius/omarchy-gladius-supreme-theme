@@ -8,12 +8,14 @@
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
 #include <cairo.h>
 
 #define MAX_PARTICLES 1200
+#define STAMP_SIZE 128
 
 typedef struct {
     double x, y;
@@ -26,6 +28,13 @@ typedef struct {
 } SmokeParticle;
 
 typedef struct {
+    double x, y;
+    double radius;
+    double alpha;
+    double r_col, g_col, b_col;
+} RenderParticle;
+
+typedef struct {
     GtkWidget *window;
     GtkWidget *drawing_area;
     GdkMonitor *monitor;
@@ -36,6 +45,11 @@ static SmokeParticle particles[MAX_PARTICLES];
 static int particle_head = 0;
 static pthread_mutex_t p_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Double-buffered render snapshot (decoupled from poller mutex)
+static RenderParticle render_snapshot[MAX_PARTICLES];
+static int render_snapshot_count = 0;
+static pthread_mutex_t render_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static volatile gboolean is_running = TRUE;
 static volatile gboolean is_animating = FALSE;
 static volatile gboolean needs_wake = FALSE;
@@ -43,6 +57,37 @@ static volatile gboolean needs_wake = FALSE;
 static GList *overlay_list = NULL;
 static GtkApplication *global_app = NULL;
 static guint tick_source_id = 0;
+static char lock_file_path[512] = "";
+
+// Pre-cached high-performance smoke stamp
+static cairo_surface_t *smoke_stamp = NULL;
+
+static void init_smoke_stamp(void) {
+    smoke_stamp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, STAMP_SIZE, STAMP_SIZE);
+    cairo_t *cr = cairo_create(smoke_stamp);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    double mid = STAMP_SIZE / 2.0;
+    double rad = mid;
+
+    // Volumetric 3D sphere gradient with offset specular illumination
+    cairo_pattern_t *pat = cairo_pattern_create_radial(
+        mid - rad * 0.15, mid - rad * 0.15, rad * 0.05,
+        mid, mid, rad
+    );
+    cairo_pattern_add_color_stop_rgba(pat, 0.0, 1.0, 1.0, 1.0, 1.0);
+    cairo_pattern_add_color_stop_rgba(pat, 0.38, 0.95, 0.96, 1.0, 0.72);
+    cairo_pattern_add_color_stop_rgba(pat, 0.72, 0.85, 0.88, 0.95, 0.25);
+    cairo_pattern_add_color_stop_rgba(pat, 1.0, 0.75, 0.78, 0.85, 0.0);
+
+    cairo_set_source(cr, pat);
+    cairo_arc(cr, mid, mid, rad, 0, 2 * M_PI);
+    cairo_fill(cr);
+    cairo_pattern_destroy(pat);
+    cairo_destroy(cr);
+}
 
 static double rand_range(double min, double max) {
     return min + (double)rand() / (double)RAND_MAX * (max - min);
@@ -57,9 +102,9 @@ static void spawn_particle(double x, double y, double move_vx, double move_vy) {
     p->x = x + cos(angle) * dist;
     p->y = y + sin(angle) * dist;
 
-    // Opposite drift, slight upward rise, and mild atmospheric swirl
+    // Opposite drift, thermal buoyancy, and slight swirl
     p->vx = -move_vx * 0.12 + rand_range(-15, 15);
-    p->vy = -move_vy * 0.12 - rand_range(12, 32); // thermal smoke ascent
+    p->vy = -move_vy * 0.12 - rand_range(12, 32);
 
     p->r0 = rand_range(12, 18);
     p->r_max = rand_range(42, 65);
@@ -67,8 +112,6 @@ static void spawn_particle(double x, double y, double move_vx, double move_vy) {
     p->lifetime = rand_range(0.70, 1.05);
     p->alpha0 = rand_range(0.40, 0.58);
 
-    // Warhammer grimdark atmospheric smoke:
-    // Volumetric cool misty smoke with subtle battle ash / ceramite mist hue
     double base = rand_range(0.82, 0.95);
     p->r_col = base * 0.94;
     p->g_col = base * 0.97;
@@ -79,6 +122,7 @@ static void spawn_particle(double x, double y, double move_vx, double move_vy) {
 }
 
 static void on_map(GtkWidget *widget, gpointer data) {
+    (void)data;
     GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
     if (surface) {
         cairo_region_t *empty = cairo_region_create();
@@ -88,9 +132,9 @@ static void on_map(GtkWidget *widget, gpointer data) {
 }
 
 static void draw_smoke_func(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data) {
+    (void)area;
     MonitorOverlay *ov = (MonitorOverlay*)user_data;
 
-    // Clear frame transparent
     cairo_save(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
@@ -98,47 +142,50 @@ static void draw_smoke_func(GtkDrawingArea *area, cairo_t *cr, int width, int he
 
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
-    pthread_mutex_lock(&p_mutex);
-    for (int i = 0; i < MAX_PARTICLES; i++) {
-        SmokeParticle *p = &particles[i];
-        if (!p->active) continue;
+    // Read from thread-local snapshot: ZERO lock contention on poller mutex
+    RenderParticle local_copy[MAX_PARTICLES];
+    int count = 0;
 
-        double local_x = p->x - ov->mon_x;
-        double local_y = p->y - ov->mon_y;
+    pthread_mutex_lock(&render_mutex);
+    count = render_snapshot_count;
+    if (count > 0) {
+        memcpy(local_copy, render_snapshot, count * sizeof(RenderParticle));
+    }
+    pthread_mutex_unlock(&render_mutex);
 
-        double progress = p->age / p->lifetime;
-        if (progress >= 1.0) continue;
+    if (count == 0 || !smoke_stamp) return;
 
-        double radius = p->r0 + (p->r_max - p->r0) * pow(progress, 0.65);
-        double alpha = p->alpha0 * pow(1.0 - progress, 1.4);
+    double half_stamp = STAMP_SIZE / 2.0;
 
-        if (local_x + radius < 0 || local_x - radius > width ||
-            local_y + radius < 0 || local_y - radius > height) {
+    for (int i = 0; i < count; i++) {
+        RenderParticle *p = &local_copy[i];
+
+        double lx = p->x - ov->mon_x;
+        double ly = p->y - ov->mon_y;
+        double r = p->radius;
+
+        if (lx + r < 0 || lx - r > width || ly + r < 0 || ly - r > height) {
             continue;
         }
 
-        // Volumetric radial smoke gradient
-        cairo_pattern_t *pat = cairo_pattern_create_radial(
-            local_x - radius * 0.15, local_y - radius * 0.15, radius * 0.05,
-            local_x, local_y, radius
-        );
-        cairo_pattern_add_color_stop_rgba(pat, 0.0, p->r_col, p->g_col, p->b_col, alpha);
-        cairo_pattern_add_color_stop_rgba(pat, 0.38, p->r_col * 0.92, p->g_col * 0.94, p->b_col * 0.98, alpha * 0.68);
-        cairo_pattern_add_color_stop_rgba(pat, 0.72, p->r_col * 0.82, p->g_col * 0.84, p->b_col * 0.88, alpha * 0.22);
-        cairo_pattern_add_color_stop_rgba(pat, 1.0, p->r_col * 0.70, p->g_col * 0.72, p->b_col * 0.78, 0.0);
+        double scale = r / half_stamp;
 
-        cairo_set_source(cr, pat);
-        cairo_arc(cr, local_x, local_y, radius, 0, 2 * M_PI);
-        cairo_fill(cr);
-        cairo_pattern_destroy(pat);
+        cairo_save(cr);
+        cairo_translate(cr, lx, ly);
+        cairo_scale(cr, scale, scale);
+        cairo_translate(cr, -half_stamp, -half_stamp);
+
+        cairo_set_source_surface(cr, smoke_stamp, 0, 0);
+        cairo_paint_with_alpha(cr, p->alpha);
+        cairo_restore(cr);
     }
-    pthread_mutex_unlock(&p_mutex);
 }
 
 static gint64 last_frame_time = 0;
 static gboolean on_frame_tick(gpointer user_data);
 
 static gboolean wake_animation(gpointer user_data) {
+    (void)user_data;
     if (!is_animating) {
         is_animating = TRUE;
         last_frame_time = g_get_monotonic_time();
@@ -150,11 +197,16 @@ static gboolean wake_animation(gpointer user_data) {
 }
 
 static gboolean on_frame_tick(gpointer user_data) {
+    (void)user_data;
     gint64 now = g_get_monotonic_time();
     if (last_frame_time == 0) last_frame_time = now;
     double dt = (double)(now - last_frame_time) / 1000000.0;
     last_frame_time = now;
     if (dt > 0.05) dt = 0.05;
+
+    // Fast snapshot update
+    RenderParticle next_snap[MAX_PARTICLES];
+    int snap_count = 0;
 
     pthread_mutex_lock(&p_mutex);
     int active = 0;
@@ -172,24 +224,42 @@ static gboolean on_frame_tick(gpointer user_data) {
         p->y += p->vy * dt;
         p->vx *= (1.0 - 0.35 * dt);
         p->vy *= (1.0 - 0.18 * dt);
+
+        double progress = p->age / p->lifetime;
+        if (progress < 1.0 && snap_count < MAX_PARTICLES) {
+            RenderParticle *rp = &next_snap[snap_count++];
+            rp->x = p->x;
+            rp->y = p->y;
+            rp->radius = p->r0 + (p->r_max - p->r0) * pow(progress, 0.65);
+            rp->alpha = p->alpha0 * pow(1.0 - progress, 1.4);
+            rp->r_col = p->r_col;
+            rp->g_col = p->g_col;
+            rp->b_col = p->b_col;
+        }
         active++;
     }
 
-    if (active == 0 && !needs_wake) {
-        // All smoke cleared and no pending motion: sleep timer
+    gboolean stop_animating = (active == 0 && !needs_wake);
+    needs_wake = FALSE;
+    pthread_mutex_unlock(&p_mutex);
+
+    // Atomic snapshot publish
+    pthread_mutex_lock(&render_mutex);
+    render_snapshot_count = snap_count;
+    if (snap_count > 0) {
+        memcpy(render_snapshot, next_snap, snap_count * sizeof(RenderParticle));
+    }
+    pthread_mutex_unlock(&render_mutex);
+
+    if (stop_animating) {
         is_animating = FALSE;
         tick_source_id = 0;
-        pthread_mutex_unlock(&p_mutex);
-
-        // Final clear on all overlays
         for (GList *l = overlay_list; l != NULL; l = l->next) {
             MonitorOverlay *ov = (MonitorOverlay*)l->data;
             gtk_widget_queue_draw(ov->drawing_area);
         }
         return G_SOURCE_REMOVE;
     }
-    needs_wake = FALSE;
-    pthread_mutex_unlock(&p_mutex);
 
     // Queue redraw
     for (GList *l = overlay_list; l != NULL; l = l->next) {
@@ -200,8 +270,17 @@ static gboolean on_frame_tick(gpointer user_data) {
     return G_SOURCE_CONTINUE;
 }
 
-// Background poller thread for Hyprland cursorpos
+static gboolean quit_app_idle(gpointer data) {
+    (void)data;
+    if (global_app) {
+        g_application_quit(G_APPLICATION(global_app));
+    }
+    return G_SOURCE_REMOVE;
+}
+
+// Background poller thread with socket timeout and failure threshold
 static void *poll_thread_func(void *arg) {
+    (void)arg;
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     const char *sig = getenv("HYPRLAND_INSTANCE_SIGNATURE");
     if (!runtime || !sig) {
@@ -215,50 +294,74 @@ static void *poll_thread_func(void *arg) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock_path);
+    if (strlen(sock_path) >= sizeof(addr.sun_path)) {
+        fprintf(stderr, "gladius-smoke-trail: Socket path exceeds buffer length\n");
+        return NULL;
+    }
+    memcpy(addr.sun_path, sock_path, strlen(sock_path) + 1);
 
     int prev_x = -1, prev_y = -1;
+    int consecutive_errors = 0;
+    const int max_errors = 150; // ~1.2s without compositor -> graceful exit
+
+    // 50ms socket read/write timeout
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
 
     while (is_running) {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd >= 0) {
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
             if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+                consecutive_errors = 0;
                 const char *cmd = "cursorpos";
-                write(fd, cmd, strlen(cmd));
-                char buf[64];
-                ssize_t n = read(fd, buf, sizeof(buf) - 1);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    int cx, cy;
-                    if (sscanf(buf, "%d, %d", &cx, &cy) == 2) {
-                        if (prev_x != -1 && (cx != prev_x || cy != prev_y)) {
-                            double dx = cx - prev_x;
-                            double dy = cy - prev_y;
-                            double dist = sqrt(dx * dx + dy * dy);
+                ssize_t w_n = write(fd, cmd, strlen(cmd));
+                if (w_n > 0) {
+                    char buf[64];
+                    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+                    if (n > 0) {
+                        buf[n] = '\0';
+                        int cx, cy;
+                        if (sscanf(buf, "%d, %d", &cx, &cy) == 2) {
+                            if (prev_x != -1 && (cx != prev_x || cy != prev_y)) {
+                                double dx = cx - prev_x;
+                                double dy = cy - prev_y;
+                                double dist = sqrt(dx * dx + dy * dy);
 
-                            if (dist > 1.5) {
-                                pthread_mutex_lock(&p_mutex);
-                                int steps = (int)(dist / 6.0);
-                                if (steps < 1) steps = 1;
-                                if (steps > 8) steps = 8;
+                                if (dist > 1.5) {
+                                    pthread_mutex_lock(&p_mutex);
+                                    int steps = (int)(dist / 6.0);
+                                    if (steps < 1) steps = 1;
+                                    if (steps > 8) steps = 8;
 
-                                for (int s = 0; s < steps; s++) {
-                                    double f = (double)(s + 1) / (double)steps;
-                                    double px = prev_x + dx * f;
-                                    double py = prev_y + dy * f;
-                                    spawn_particle(px, py, dx * 8.0, dy * 8.0);
-                                }
-                                needs_wake = TRUE;
-                                pthread_mutex_unlock(&p_mutex);
+                                    for (int s = 0; s < steps; s++) {
+                                        double f = (double)(s + 1) / (double)steps;
+                                        double px = prev_x + dx * f;
+                                        double py = prev_y + dy * f;
+                                        spawn_particle(px, py, dx * 8.0, dy * 8.0);
+                                    }
+                                    needs_wake = TRUE;
+                                    pthread_mutex_unlock(&p_mutex);
 
-                                if (!is_animating) {
-                                    g_idle_add(wake_animation, NULL);
+                                    if (!is_animating) {
+                                        g_idle_add(wake_animation, NULL);
+                                    }
                                 }
                             }
+                            prev_x = cx;
+                            prev_y = cy;
                         }
-                        prev_x = cx;
-                        prev_y = cy;
                     }
+                }
+            } else {
+                consecutive_errors++;
+                if (consecutive_errors >= max_errors) {
+                    // Compositor connection lost; shut down daemon gracefully
+                    is_running = FALSE;
+                    g_idle_add(quit_app_idle, NULL);
+                    close(fd);
+                    break;
                 }
             }
             close(fd);
@@ -269,7 +372,10 @@ static void *poll_thread_func(void *arg) {
 }
 
 static void activate(GtkApplication *app, gpointer user_data) {
+    (void)user_data;
     global_app = app;
+    init_smoke_stamp();
+
     GdkDisplay *display = gdk_display_get_default();
 
     GtkCssProvider *css = gtk_css_provider_new();
@@ -320,27 +426,28 @@ static void activate(GtkApplication *app, gpointer user_data) {
         g_object_unref(mon);
     }
 
-    // Start background poller thread
     pthread_t tid;
     pthread_create(&tid, NULL, poll_thread_func, NULL);
     pthread_detach(tid);
 }
 
 static void handle_signal(int sig) {
+    (void)sig;
     is_running = FALSE;
+    if (lock_file_path[0]) {
+        unlink(lock_file_path);
+    }
     if (global_app) {
         g_application_quit(G_APPLICATION(global_app));
     }
 }
 
 int main(int argc, char **argv) {
-    // Single instance lock
     const char *runtime = getenv("XDG_RUNTIME_DIR");
-    char lock_path[512];
-    snprintf(lock_path, sizeof(lock_path), "%s/gladius-smoke-trail.lock", runtime ? runtime : "/tmp");
-    int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    snprintf(lock_file_path, sizeof(lock_file_path), "%s/gladius-smoke-trail.lock", runtime ? runtime : "/tmp");
+
+    int lock_fd = open(lock_file_path, O_CREAT | O_RDWR, 0600);
     if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        // If already running and user called with --kill / -k:
         if (argc > 1 && (strcmp(argv[1], "--kill") == 0 || strcmp(argv[1], "-k") == 0)) {
             char pid_buf[32];
             int read_n = read(lock_fd, pid_buf, sizeof(pid_buf) - 1);
@@ -362,11 +469,20 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
+    signal(SIGPIPE, SIG_IGN);
 
     srand(time(NULL));
     GtkApplication *app = gtk_application_new("org.omarchy.gladius.smoketrail", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
     int status = g_application_run(G_APPLICATION(app), argc, argv);
+
+    if (smoke_stamp) {
+        cairo_surface_destroy(smoke_stamp);
+    }
     g_object_unref(app);
+
+    if (lock_file_path[0]) {
+        unlink(lock_file_path);
+    }
     return status;
 }
