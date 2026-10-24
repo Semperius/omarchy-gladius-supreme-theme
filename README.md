@@ -2,7 +2,7 @@
 
 An all-in-one grimdark battlefield theme for [Omarchy](https://omarchy.org/) featuring:
 - **Gladius Ultramarine Mouse Pointer**: Authentic tactical chevron cursor geometry from *Warhammer 40,000 Gladius: Relics of War* rendered with Macragge Ultramarine ceramite blue armor plating and a high-contrast Imperial Crimson outline. Configured at large 48px size.
-- **Volumetric Smoke Trail**: A native, lightweight GTK4 layer-shell daemon (`gladius-smoke-trail`) producing atmospheric battlefield smoke puffs trailing dynamically behind the pointer whenever moved, with 100% input pass-through and automatic zero-CPU idle sleep.
+- **Volumetric Smoke Trail with Wake Spotlight**: A native, hyper-optimized GTK4 layer-shell daemon (`gladius-smoke-trail`) producing atmospheric battlefield smoke puffs trailing dynamically behind the pointer whenever moved, featuring adaptive socket polling (down to ~28 Hz idle backoff), a 60 FPS capped rendering engine, and an automatic radial wake-burst halo that instantly spotlights the cursor after being stationary.
 - **Official Gladius Wallpapers & Palette**: 11 official 1080p game wallpapers, paired with Space Marine ceramite blue (`#3B82F6`), grimdark slate backgrounds (`#0F141D`), purity gold accents (`#E5A93C`), and dual-tone 45° active window borders.
 - **Battlefield Screensaver with Password Lock**: Multi-monitor terminal screensaver with rotating ASCII art banners and looping *Gladius: Relics of War* soundtrack audio, automatically securing the machine with password lock upon dismissal or idle timeout.
 

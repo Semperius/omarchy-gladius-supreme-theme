@@ -14,7 +14,7 @@
 #include <gtk4-layer-shell.h>
 #include <cairo.h>
 
-#define MAX_PARTICLES 1200
+#define MAX_PARTICLES 400
 #define STAMP_SIZE 128
 
 typedef struct {
@@ -106,11 +106,11 @@ static void spawn_particle(double x, double y, double move_vx, double move_vy) {
     p->vx = -move_vx * 0.12 + rand_range(-15, 15);
     p->vy = -move_vy * 0.12 - rand_range(12, 32);
 
-    p->r0 = rand_range(12, 18);
-    p->r_max = rand_range(42, 65);
+    p->r0 = rand_range(16, 22);
+    p->r_max = rand_range(48, 72);
     p->age = 0.0;
-    p->lifetime = rand_range(0.70, 1.05);
-    p->alpha0 = rand_range(0.40, 0.58);
+    p->lifetime = rand_range(0.55, 0.85);
+    p->alpha0 = rand_range(0.40, 0.55);
 
     double base = rand_range(0.82, 0.95);
     p->r_col = base * 0.94;
@@ -119,6 +119,30 @@ static void spawn_particle(double x, double y, double move_vx, double move_vy) {
     if (p->b_col > 1.0) p->b_col = 1.0;
 
     p->active = TRUE;
+}
+
+static void spawn_wake_burst(double x, double y) {
+    for (int i = 0; i < 6; i++) {
+        SmokeParticle *p = &particles[particle_head];
+        particle_head = (particle_head + 1) % MAX_PARTICLES;
+
+        double angle = (2.0 * M_PI / 6.0) * i + rand_range(-0.15, 0.15);
+        double speed = rand_range(25.0, 50.0);
+        p->x = x;
+        p->y = y;
+        p->vx = cos(angle) * speed;
+        p->vy = sin(angle) * speed;
+        p->r0 = rand_range(16, 22);
+        p->r_max = rand_range(48, 68);
+        p->age = 0.0;
+        p->lifetime = rand_range(0.40, 0.65);
+        p->alpha0 = 0.70;
+
+        p->r_col = 0.96;
+        p->g_col = 0.98;
+        p->b_col = 1.0;
+        p->active = TRUE;
+    }
 }
 
 static void on_map(GtkWidget *widget, gpointer data) {
@@ -199,7 +223,7 @@ static gboolean wake_animation(gpointer user_data) {
         is_animating = TRUE;
         last_frame_time = g_get_monotonic_time();
         if (tick_source_id == 0) {
-            tick_source_id = g_timeout_add(8, on_frame_tick, NULL);
+            tick_source_id = g_timeout_add(16, on_frame_tick, NULL);
         }
     }
     return G_SOURCE_REMOVE;
@@ -312,6 +336,8 @@ static void *poll_thread_func(void *arg) {
     int prev_x = -1, prev_y = -1;
     int consecutive_errors = 0;
     const int max_errors = 150; // ~1.2s without compositor -> graceful exit
+    int idle_streak = 0;
+    useconds_t sleep_us = 8000;
 
     // 50ms socket read/write timeout
     struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
@@ -338,17 +364,22 @@ static void *poll_thread_func(void *arg) {
                                 double dy = cy - prev_y;
                                 double dist = sqrt(dx * dx + dy * dy);
 
-                                if (dist > 1.5) {
+                                if (dist > 2.0) {
+                                    gboolean was_idle = (idle_streak >= 50); // ~1.5s+ of stationary cursor
                                     pthread_mutex_lock(&p_mutex);
-                                    int steps = (int)(dist / 6.0);
+                                    if (was_idle) {
+                                        spawn_wake_burst(cx, cy);
+                                    }
+
+                                    int steps = (int)(dist / 14.0);
                                     if (steps < 1) steps = 1;
-                                    if (steps > 8) steps = 8;
+                                    if (steps > 5) steps = 5;
 
                                     for (int s = 0; s < steps; s++) {
                                         double f = (double)(s + 1) / (double)steps;
                                         double px = prev_x + dx * f;
                                         double py = prev_y + dy * f;
-                                        spawn_particle(px, py, dx * 8.0, dy * 8.0);
+                                        spawn_particle(px, py, dx * 6.0, dy * 6.0);
                                     }
                                     needs_wake = TRUE;
                                     pthread_mutex_unlock(&p_mutex);
@@ -356,6 +387,17 @@ static void *poll_thread_func(void *arg) {
                                     if (!is_animating) {
                                         g_idle_add(wake_animation, NULL);
                                     }
+                                }
+                                idle_streak = 0;
+                                sleep_us = 8000;
+                            } else if (prev_x != -1) {
+                                idle_streak++;
+                                if (idle_streak > 30) {
+                                    sleep_us = 35000; // ~28 Hz idle backoff
+                                } else if (idle_streak > 8) {
+                                    sleep_us = 16000; // ~60 Hz transition
+                                } else {
+                                    sleep_us = 8000;
                                 }
                             }
                             prev_x = cx;
@@ -375,7 +417,7 @@ static void *poll_thread_func(void *arg) {
             }
             close(fd);
         }
-        usleep(8000); // 125 Hz
+        usleep(sleep_us);
     }
     return NULL;
 }
