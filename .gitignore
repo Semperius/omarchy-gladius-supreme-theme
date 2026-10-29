@@ -4,3 +4,4 @@ smoke-trail/gladius-smoke-trail
 *.bak
 *~
 .DS_Store
+*.mp4

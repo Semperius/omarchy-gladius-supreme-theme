@@ -1,79 +1,79 @@
 #!/bin/bash
-# omarchy:summary=Activate the Warhammer 40,000 Gladius Prime screensaver with rotating art, music, and lock on dismiss
+# ==============================================================================
+# Activate the Warhammer 40,000 Gladius Prime screensaver across ALL monitors
+# Features:
+#   - Dynamic randomized transitions (Warp Vortex, Acid Rain, Imperial Crescendo)
+#   - Full-motion faction cinematics with Aquila & weapon iconography
+#   - Audible character voice dialogue & orchestral battle themes
+#   - Instant lock on dismiss
+# ==============================================================================
 
 if [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]]; then
   exit 0
 fi
 
-if pgrep -f '[o]rg.omarchy.screensaver' >/dev/null; then
-  exit 0
-fi
+# Clean up any lingering screensaver instances
+killall -q mpv 2>/dev/null || true
+pkill -f '[g]ladius-battle-chatter' 2>/dev/null || true
 
 RUNNER="$HOME/.local/bin/gladius-screensaver-runner"
 if [[ ! -x "$RUNNER" ]]; then
   exit 1
 fi
 
-ROTATION_MGR="$HOME/.local/bin/gladius-rotation-manager"
-if [[ -x "$ROTATION_MGR" ]]; then
-  TRACK_PATH=$("$ROTATION_MGR" --music)
-else
-  TRACK_PATH=""$HOME"/.local/share/Steam/steamapps/common/Warhammer 40000 Gladius - Relics of War/Soundtrack/Gladius - Main Theme.mp3"
-fi
+focused=$(omarchy-hyprland-monitor-focused 2>/dev/null || echo "DP-3")
 
-# Stop any previous soundtrack audio process
-pkill -f 'mpv.*Gladius.*Soundtrack' 2>/dev/null || true
+# Generate a freshly randomized multi-transition playlist for this session
+python3 -c "
+import random, os
 
-# Start background audio playback with mpv (looping)
-if [[ -n "$TRACK_PATH" && -f "$TRACK_PATH" ]]; then
-  mpv --no-video --no-terminal --loop-file=inf --volume=100 "$TRACK_PATH" >/dev/null 2>&1 &
-fi
+DATA_DIR = os.path.expanduser('~/.local/share/gladius_screensaver')
+TRANS_DIR = f'{DATA_DIR}/transitions'
+FACTION_DIR = f'{DATA_DIR}/factions'
+PLAYLIST_FILE = f'{DATA_DIR}/playlist.m3u'
 
-focused=$(omarchy-hyprland-monitor-focused)
-terminal=$(xdg-terminal-exec --print-id 2>/dev/null || echo "kitty")
+transitions = [
+    f'{TRANS_DIR}/transition_warp.mp4',
+    f'{TRANS_DIR}/transition_rain.mp4',
+    f'{TRANS_DIR}/transition_crescendo.mp4'
+]
 
-hypr_focus_monitor() {
-  hyprctl dispatch "hl.dsp.focus({ monitor = \"$1\" })" >/dev/null 2>&1 || hyprctl dispatch focusmonitor "$1" >/dev/null
-}
+factions = [
+    f'{FACTION_DIR}/faction_ultramarine.mp4',
+    f'{FACTION_DIR}/faction_ork.mp4',
+    f'{FACTION_DIR}/faction_necron.mp4',
+    f'{FACTION_DIR}/faction_guard.mp4',
+    f'{FACTION_DIR}/faction_chaos.mp4'
+]
 
-hypr_exec() {
-  local command
-  printf -v command '%q ' "$@"
+playlist_items = []
+for cycle in range(5):
+    pool = list(factions)
+    random.shuffle(pool)
+    for f in pool:
+        t = random.choice(transitions)
+        playlist_items.append(t)
+        playlist_items.append(f)
 
-  hyprctl dispatch "hl.dsp.exec_cmd([[$command]])" >/dev/null 2>&1 || hyprctl dispatch exec -- bash -lc "$command" >/dev/null
-}
+with open(PLAYLIST_FILE, 'w') as fp:
+    for item in playlist_items:
+        fp.write(f'{item}\n')
+"
 
-SOCKET="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+# Dispatch explicitly to the active workspace on every detected monitor
+python3 -c "
+import subprocess, json, time, os
 
-# Open Hyprland's event stream before spawning anything
-exec {events}< <(socat -U - "UNIX-CONNECT:$SOCKET")
+res = subprocess.run(['hyprctl', 'monitors', '-j'], capture_output=True, text=True)
+monitors = json.loads(res.stdout)
+focused = '$focused'
+runner = os.path.expanduser('~/.local/bin/gladius-screensaver-runner')
 
-wait_for_screensaver_window() {
-  local line deadline=$((SECONDS + 5))
-  while ((SECONDS < deadline)) && IFS= read -r -t $((deadline - SECONDS)) -u "$events" line; do
-    [[ $line == openwindow\>\>*,org.omarchy.screensaver,* ]] && return 0
-  done
-}
-
-for m in $(hyprctl monitors -j | jq -r '.[] | .name'); do
-  hypr_focus_monitor "$m"
-
-  case $terminal in
-  *Alacritty*)
-    hypr_exec alacritty --class=org.omarchy.screensaver --config-file "${OMARCHY_PATH:-/usr/share/omarchy}/default/alacritty/screensaver.toml" -e "$RUNNER"
-    ;;
-  *ghostty*)
-    hypr_exec ghostty --class=org.omarchy.screensaver --config-file="${OMARCHY_PATH:-/usr/share/omarchy}/default/ghostty/screensaver" --font-size=18 -e "$RUNNER"
-    ;;
-  *foot*)
-    hypr_exec foot --app-id=org.omarchy.screensaver --config="${OMARCHY_PATH:-/usr/share/omarchy}/default/foot/screensaver.ini" -e "$RUNNER"
-    ;;
-  *)
-    hypr_exec kitty --class=org.omarchy.screensaver --override font_size=18 --override window_padding_width=0 -e "$RUNNER"
-    ;;
-  esac
-
-  wait_for_screensaver_window
-done
-
-hypr_focus_monitor "$focused"
+for m in monitors:
+    m_name = m['name']
+    ws_id = m['activeWorkspace']['id']
+    vol = '95' if m_name == focused else '0'
+    cmd = f'hl.dsp.exec_cmd([[[workspace {ws_id}] {runner} {m_name} {vol}]])'
+    subprocess.run(['hyprctl', 'dispatch', cmd], capture_output=True)
+    time.sleep(0.3)
+"
