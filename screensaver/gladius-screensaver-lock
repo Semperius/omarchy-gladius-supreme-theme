@@ -1,18 +1,21 @@
 #!/bin/bash
 # ==============================================================================
-# Activate the Warhammer 40,000 Gladius Prime screensaver across ALL monitors
+# WARHAMMER 40,000 GLADIUS SUPREME UNIFIED SCREENSAVER DISPATCHER
+#
 # Features:
-#   - Dynamic randomized transitions (Warp Vortex, Acid Rain, Imperial Crescendo)
-#   - Full-motion faction cinematics with Aquila & weapon iconography
-#   - Audible character voice dialogue & orchestral battle themes
-#   - Instant lock on dismiss
+#   - Synchronized Multi-Monitor Display (DP-1, DP-2, DP-3)
+#   - Randomized Transitions (Warp Vortex, Acid Rain, Imperial Crescendo)
+#   - Voiced Faction Cinematics with Aquila & Weapon Iconography
+#   - Frame-Accurate Simultaneous Launch
+#   - Instant Lock on Dismiss (Any Keypress or Mouse Click)
 # ==============================================================================
 
+# If already locked, do not re-trigger
 if [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]]; then
   exit 0
 fi
 
-# Clean up any lingering screensaver instances
+# Clean up any lingering screensaver instances for a clean start
 killall -q mpv 2>/dev/null || true
 pkill -f '[g]ladius-battle-chatter' 2>/dev/null || true
 
@@ -23,7 +26,7 @@ fi
 
 focused=$(omarchy-hyprland-monitor-focused 2>/dev/null || echo "DP-3")
 
-# Generate a freshly randomized multi-transition playlist for this session
+# 1. Generate a dynamically randomized transition playlist for this session
 python3 -c "
 import random, os
 
@@ -47,7 +50,8 @@ factions = [
 ]
 
 playlist_items = []
-for cycle in range(5):
+# Create 6 random cycles so the screensaver can loop seamlessly
+for cycle in range(6):
     pool = list(factions)
     random.shuffle(pool)
     for f in pool:
@@ -60,7 +64,7 @@ with open(PLAYLIST_FILE, 'w') as fp:
         fp.write(f'{item}\n')
 "
 
-# Dispatch explicitly to the active workspace on every detected monitor
+# 2. Dispatch simultaneously to each monitor's visible workspace
 python3 -c "
 import subprocess, json, time, os
 
@@ -72,8 +76,8 @@ runner = os.path.expanduser('~/.local/bin/gladius-screensaver-runner')
 for m in monitors:
     m_name = m['name']
     ws_id = m['activeWorkspace']['id']
-    vol = '95' if m_name == focused else '0'
-    cmd = f'hl.dsp.exec_cmd([[[workspace {ws_id}] {runner} {m_name} {vol}]])'
+    audio_flag = '--volume=95' if m_name == focused else '--mute=yes'
+    cmd = f'hl.dsp.exec_cmd([[[workspace {ws_id}] {runner} {m_name} {audio_flag}]])'
     subprocess.run(['hyprctl', 'dispatch', cmd], capture_output=True)
-    time.sleep(0.3)
+    time.sleep(0.04)
 "
