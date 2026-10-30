@@ -4,10 +4,10 @@
 #
 # Features:
 #   - Synchronized Multi-Monitor Display (DP-1, DP-2, DP-3)
-#   - Randomized Transitions (Warp Vortex, Acid Rain, Imperial Crescendo)
-#   - Voiced Faction Cinematics with Aquila & Weapon Iconography
-#   - Frame-Accurate Simultaneous Launch
-#   - Instant Lock on Dismiss (Any Keypress or Mouse Click)
+#   - Full-Motion Faction Cinematics (Transitions Eliminated)
+#   - Voiced Faction Audio with Aquila & Weapon Iconography
+#   - Frame-Accurate Simultaneous Multi-Screen Launch
+#   - Secure Zero-Exposure Lock Dismissal (No Desktop Flashing)
 # ==============================================================================
 
 # If already locked, do not re-trigger
@@ -26,20 +26,13 @@ fi
 
 focused=$(omarchy-hyprland-monitor-focused 2>/dev/null || echo "DP-3")
 
-# 1. Generate a dynamically randomized transition playlist for this session
+# 1. Generate a pure faction cinematic playlist for this session (transitions eliminated)
 python3 -c "
 import random, os
 
 DATA_DIR = os.path.expanduser('~/.local/share/gladius_screensaver')
-TRANS_DIR = f'{DATA_DIR}/transitions'
 FACTION_DIR = f'{DATA_DIR}/factions'
 PLAYLIST_FILE = f'{DATA_DIR}/playlist.m3u'
-
-transitions = [
-    f'{TRANS_DIR}/transition_warp.mp4',
-    f'{TRANS_DIR}/transition_rain.mp4',
-    f'{TRANS_DIR}/transition_crescendo.mp4'
-]
 
 factions = [
     f'{FACTION_DIR}/faction_ultramarine.mp4',
@@ -50,13 +43,11 @@ factions = [
 ]
 
 playlist_items = []
-# Create 6 random cycles so the screensaver can loop seamlessly
+# Create 6 random cycles so the screensaver can loop seamlessly without transitions
 for cycle in range(6):
     pool = list(factions)
     random.shuffle(pool)
     for f in pool:
-        t = random.choice(transitions)
-        playlist_items.append(t)
         playlist_items.append(f)
 
 with open(PLAYLIST_FILE, 'w') as fp:

@@ -14,18 +14,18 @@ INPUT_CONF="$DATA_DIR/mpv_screensaver_input.conf"
 lock_and_exit() {
   trap '' SIGINT SIGTERM SIGHUP SIGQUIT
   
-  if [[ $(omarchy-shell lock isLocked 2>/dev/null) != "true" ]]; then
-    omarchy system lock &
-    local deadline=$((SECONDS + 3))
+  if [[ $(omarchy-shell lock isSecure 2>/dev/null) != "true" ]]; then
+    omarchy-shell lock lock 2>/dev/null || omarchy system lock 2>/dev/null || true
+    local deadline=$((SECONDS + 4))
     while (( SECONDS < deadline )); do
-      if [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]]; then
+      if [[ $(omarchy-shell lock isSecure 2>/dev/null) == "true" ]]; then
         break
       fi
-      sleep 0.05
+      sleep 0.02
     done
   fi
 
-  # Dismiss screensavers across ALL screens simultaneously
+  # Dismiss screensavers across ALL screens simultaneously once lock is secure
   killall -q mpv 2>/dev/null || true
   pkill -f '[g]ladius-battle-chatter' 2>/dev/null || true
   hyprctl eval 'hl.config({ cursor = { invisible = false } })' &>/dev/null || true
@@ -40,7 +40,7 @@ if [[ ! -f "$PLAYLIST_FILE" ]]; then
 fi
 
 # Run hardware-accelerated video
-mpv --wayland-app-id=org.omarchy.screensaver \
+mpv --wayland-app-id=gladius.screensaver \
     --fullscreen \
     --hwdec=auto \
     --loop-playlist=inf \
