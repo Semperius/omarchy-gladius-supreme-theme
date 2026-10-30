@@ -47,7 +47,7 @@ omarchy theme set gladius-supreme
 
 4. Install the screensaver scripts and systemd timer:
    ```bash
-   cp screensaver/gladius-screensaver-runner screensaver/gladius-screensaver-lock screensaver/gladius-rotation-manager ~/.local/bin/
+   cp screensaver/gladius-screensaver-runner screensaver/gladius-screensaver-lock screensaver/gladius-screensaver-dismiss screensaver/gladius-rotation-manager ~/.local/bin/
    mkdir -p ~/.config/omarchy/branding/gladius_screensavers
    cp screensaver/art/* ~/.config/omarchy/branding/gladius_screensavers/
    mkdir -p ~/.config/systemd/user
