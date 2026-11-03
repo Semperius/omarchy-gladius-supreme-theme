@@ -9,6 +9,9 @@ An official grimdark battlefield theme for [Omarchy](https://omarchy.org/) inspi
   - **11 Faction Cinematic Snapshots** (`20-snapshot-01-adepta-sororitas.jpg` through `30-snapshot-11-tyranids.jpg`) featuring authentic sub-faction heraldry (`Captain Corezon – Ultramarines, 2nd Company`, `Order of Our Martyred Lady`, `Cohort of Mars`, `8th Cadian Regiment`, `Host of Biel-Tan`, `The Crimson Slaughter`, `Kabal of the Poisoned Tongue`, `Sautekh Dynasty`, `Goff Clan`, `Commander Shadowsun – Vior'la Sept`, and `Hive Fleet Leviathan`).
   - **14 Battlefield & Warp Storm Wallpapers** including the Ultramarine standing beneath the swirling Warp Storm (`05-space-marine-warp-storm.jpg`), paired with Space Marine ceramite blue (`#3B82F6`), grimdark slate backgrounds (`#0F141D`), and purity gold accents (`#E5A93C`).
 - **Astartes-Pattern Power Sword Cursor (`Model: Castrum-9`)**:
+
+  ![Castrum-9 Astartes Power Sword Cursor](cursors/castrum9-preview.png)
+
   - Forged to **Tech-Priest Omega-92's Technical Data Package (`032.M42`)** featuring a mirror-polished liquid-chrome Adamantium blade, crackling high-voltage cyan-and-white disruption lightning arcs across 32 animation frames, exposed copper disruption coils, an Imperialis winged-skull crossguard, a 5-ribbed ceramite-weave grip, and a pulsing MK.III micro-fusion core pommel (`24px`–`144px` for both XCursor and Hyprcursor, inheriting `Adwaita`).
 - **Pure Declarative Theme Package**: Contains zero executable code or scripts in full compliance with the Omarchy theme gallery specification.
 
